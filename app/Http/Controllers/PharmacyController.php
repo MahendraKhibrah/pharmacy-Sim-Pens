@@ -48,18 +48,31 @@ class PharmacyController extends Controller
             return response()->json(['error' => 'Visit detail not found'], 404);
         }
 
-        $prescriptionDetails = $this->getPrescriptionDetail($visitDetail->apotek_id, $visitDetail->id);
+        $prescriptionDetails = $this->getPrescriptionDetail($visitDetail->apotek_id, $visitDetail->id)
+            ->map(function ($drugDetail) {
+                $drugDetail->name = $drugDetail->drug()->name;
+
+                unset($drugDetail->id);
+                unset($drugDetail->prescription_id);
+                unset($drugDetail->drug_id);
+                unset($drugDetail->created_at);
+                unset($drugDetail->updated_at);
+
+                return $drugDetail;
+            });
         $prescription = $this->getPrescription($visitDetailId);
 
         $patient = $visitDetail->kunjungan->pasien;
 
         $totalPrice = $this->getTotalBill($prescription->id);
-
         return response()->json([
-            'visitDetail' => $visitDetail,
+            'visitId' => $visitDetail->id,
+            'prescriptionId' => $prescription->id,
+            'resep' => $visitDetail->resep,
             'prescriptionDrugs' => $prescriptionDetails,
             'patient' => $patient,
-            'prescription' => $prescription,
+            'invoiceCode' => $prescription->invoice_code,
+            'isTaken' => $prescription->is_taken,
             'totalPrice' => $totalPrice,
         ]);
     }
@@ -76,10 +89,18 @@ class PharmacyController extends Controller
 
         $drugs = Drugs::where('stock', '!=', 0)->get();
 
-        $prescriptionDetails = $this->getPrescriptionDetail($prescriptionId, null);
+        $prescriptionDetails = $this->getPrescriptionDetail($prescriptionId, null)->map(function ($drugDetail) {
+            $drugDetail->name = $drugDetail->drug()->name;
+
+            unset($drugDetail->prescription_id);
+            unset($drugDetail->created_at);
+            unset($drugDetail->updated_at);
+
+            return $drugDetail;
+        });
 
         return response()->json([
-            'prescriptionDetails' => $prescriptionDetails,
+            'drugs' => $prescriptionDetails,
             'availableDrugs' => $drugs,
             'prescriptionId' => $prescriptionId,
             'visitId' => $visitId
@@ -151,8 +172,8 @@ class PharmacyController extends Controller
     public function createDrugInPrescription(HttpRequest $request)
     {
         $validator = Validator::make($request->all(), [
-            'prescriptionId' => 'required|exists:prescriptions,id',
-            'medicineId' => 'required|exists:drugs,id',
+            'prescriptionId' => 'required',
+            'medicineId' => 'required',
             'quantity' => 'required|integer|min:1',
         ]);
 
@@ -233,19 +254,20 @@ class PharmacyController extends Controller
     public function updateDrugInPrescription(HttpRequest $request)
     {
         $validator = Validator::make($request->all(), [
-            'prescriptionDetailId' => 'required',
-            'drugId' => 'required|exists:drugs,id',
+            'prescriptionDrugId' => 'required',
             'quantity' => 'required|integer|min:1',
         ]);
+
+        $currentDrug = PrescriptionDetails::where('id', $request->prescriptionDetailId)->first();
 
         if ($validator->fails()) {
             return response()->json(['error' => $validator->errors()], 400);
         }
 
-        $isChangeLarger = $request->currentQuantity < $request->quantity;
-        $value = $this->takeTheDifferentValue($request->quantity, $request->currentQuantity);
+        $isChangeLarger = $currentDrug->quantity < $request->quantity;
+        $value = $this->takeTheDifferentValue($request->quantity, $currentDrug->quantity);
 
-        $this->operateDrugStock($request->drugId, $isChangeLarger ? '-' : '+', $value);
+        $this->operateDrugStock($currentDrug->drug_id, $isChangeLarger ? '-' : '+', $value);
 
         PrescriptionDetails::where('id', $request->prescriptionDetailId)->update([
             'quantity' => $request->quantity,
